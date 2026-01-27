@@ -1812,6 +1812,203 @@ func TestValidateAstWithZeroRestrictionOnOrComplexityReturnsNoErrorWhenValueIsHi
 	require.NoError(t, err)
 }
 
+// Tests for ambiguous field matching detection
+
+func TestValidateAstFieldAndOperatorsReturnsErrorWhenFieldMatchesExactAndRegex(t *testing.T) {
+	// Fixture Setup
+	// language=JSON
+	jsonTxt := `
+			{
+				"type": "EQ",
+				"args": [ "array",  "value"]
+			}
+			`
+	ast, err := GetAst(jsonTxt)
+	require.NoError(t, err)
+
+	// Execute SUT
+	// Both "array" (exact) and "^array.*$" (regex) match the field "array"
+	err = ValidateAstFieldAndOperators(ast, map[string][]string{
+		"array":     {"eq"},
+		"^array.*$": {"eq"},
+	})
+
+	// Verification
+	require.ErrorContains(t, err, "field [array] matches multiple keys")
+	require.ErrorContains(t, err, "[^array.*$ array]")
+}
+
+func TestValidateAstFieldAndOperatorsReturnsErrorWhenFieldMatchesMultipleRegexPatterns(t *testing.T) {
+	// Fixture Setup
+	// language=JSON
+	jsonTxt := `
+			{
+				"type": "EQ",
+				"args": [ "array.size",  "5"]
+			}
+			`
+	ast, err := GetAst(jsonTxt)
+	require.NoError(t, err)
+
+	// Execute SUT
+	// Both "^array\..*$" and "^array\.size$" match the field "array.size"
+	err = ValidateAstFieldAndOperators(ast, map[string][]string{
+		"^array\\..*$":   {"eq"},
+		"^array\\.size$": {"eq", "lt", "gt"},
+	})
+
+	// Verification
+	require.ErrorContains(t, err, "field [array.size] matches multiple keys")
+	require.ErrorContains(t, err, "[^array\\..*$ ^array\\.size$]")
+}
+
+func TestValidateAstFieldAndOperatorsAllowsNonOverlappingRegexPatterns(t *testing.T) {
+	// Fixture Setup
+	// Test that array[0] only matches the array index pattern, not the array.* pattern
+	// language=JSON
+	jsonTxt := `
+	{
+		"type": "AND",
+		"children": [
+			{
+				"type": "EQ",
+				"args": [ "array[0]",  "value"]
+			},
+			{
+				"type": "EQ",
+				"args": [ "array[1]",  "other"]
+			},
+			{
+				"type": "EQ",
+				"args": [ "array.size",  "2"]
+			}
+		]
+	}
+	`
+	ast, err := GetAst(jsonTxt)
+	require.NoError(t, err)
+
+	// Execute SUT
+	// These patterns don't overlap: array[\d+] matches array[0], array[1], etc.
+	// array\.size$ only matches array.size
+	err = ValidateAstFieldAndOperators(ast, map[string][]string{
+		"^array\\[\\d+\\]$": {"eq"},
+		"^array\\.size$":    {"eq"},
+	})
+
+	// Verification
+	require.NoError(t, err)
+}
+
+func TestValidateAstFieldAndOperatorsReturnsErrorWhenArrayFieldMatchesBothExactAndIndexPattern(t *testing.T) {
+	// Fixture Setup
+	// language=JSON
+	jsonTxt := `
+			{
+				"type": "EQ",
+				"args": [ "array[0]",  "value"]
+			}
+			`
+	ast, err := GetAst(jsonTxt)
+	require.NoError(t, err)
+
+	// Execute SUT
+	// Both exact "array[0]" and regex "^array\[\d+\]$" would match
+	err = ValidateAstFieldAndOperators(ast, map[string][]string{
+		"array[0]":          {"eq"},
+		"^array\\[\\d+\\]$": {"eq"},
+	})
+
+	// Verification
+	require.ErrorContains(t, err, "field [array[0]] matches multiple keys")
+}
+
+func TestValidateAstWithAliasesReturnsErrorWhenFieldMatchesMultipleAliases(t *testing.T) {
+	// Fixture Setup
+	// language=JSON
+	jsonTxt := `
+			{
+				"type": "EQ",
+				"args": [ "attributes.name",  "Foo"]
+			}
+			`
+	ast, err := GetAst(jsonTxt)
+	require.NoError(t, err)
+
+	// Execute SUT
+	// Both exact "attributes.name" and regex "^attributes\..*$" match the field
+	err = ValidateAstFieldAndOperatorsWithAliases(ast, map[string][]string{
+		"name": {"eq"},
+	}, map[string]string{
+		"attributes.name":   "name",
+		"^attributes\\..*$": "name",
+	})
+
+	// Verification
+	require.ErrorContains(t, err, "field [attributes.name] matches multiple aliases")
+	require.ErrorContains(t, err, "[^attributes\\..*$ attributes.name]")
+}
+
+func TestValidateAstWithAliasesReturnsErrorWhenFieldMatchesMultipleRegexAliases(t *testing.T) {
+	// Fixture Setup
+	// language=JSON
+	jsonTxt := `
+			{
+				"type": "EQ",
+				"args": [ "meta.timestamps.created_at",  "2024-01-01"]
+			}
+			`
+	ast, err := GetAst(jsonTxt)
+	require.NoError(t, err)
+
+	// Execute SUT
+	// Both regex patterns match the field
+	err = ValidateAstFieldAndOperatorsWithAliases(ast, map[string][]string{
+		"created_at": {"eq"},
+	}, map[string]string{
+		"^meta\\.timestamps\\..*$": "$1",
+		"^meta\\..*$":              "$1",
+	})
+
+	// Verification
+	require.ErrorContains(t, err, "field [meta.timestamps.created_at] matches multiple aliases")
+}
+
+func TestValidateAstWithAliasesAllowsNonOverlappingAliasPatterns(t *testing.T) {
+	// Fixture Setup
+	// language=JSON
+	jsonTxt := `
+	{
+		"type": "AND",
+		"children": [
+			{
+				"type": "EQ",
+				"args": [ "attributes.name",  "Foo"]
+			},
+			{
+				"type": "EQ",
+				"args": [ "meta.created_at",  "2024-01-01"]
+			}
+		]
+	}
+	`
+	ast, err := GetAst(jsonTxt)
+	require.NoError(t, err)
+
+	// Execute SUT
+	// These don't overlap: attributes.* and meta.* are disjoint
+	err = ValidateAstFieldAndOperatorsWithAliases(ast, map[string][]string{
+		"name":       {"eq"},
+		"created_at": {"eq"},
+	}, map[string]string{
+		"^attributes\\.(.+)$": "$1",
+		"^meta\\.(.+)$":       "$1",
+	})
+
+	// Verification
+	require.NoError(t, err)
+}
+
 func TestValidateAstWithDefaultRestrictionReturnsNoErrorWithAndQueries(t *testing.T) {
 	// Fixture Setup
 	// language=JSON

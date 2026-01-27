@@ -2,11 +2,12 @@ package epsearchast
 
 import (
 	"fmt"
-	"github.com/go-playground/validator/v10"
 	"reflect"
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/go-playground/validator/v10"
 )
 
 type validatingVisitor struct {
@@ -236,10 +237,11 @@ func (v *validatingVisitor) VisitIsNull(astNode *AstNode) (bool, error) {
 	return false, nil
 }
 
-func (v *validatingVisitor) isOperatorValidForField(operator, requestField string) (bool, error) {
-	canonicalField := v.resolveFieldName(requestField)
-
-	allowedOperatorsForField, ok := findMatchInMap(canonicalField, v.AllowedOperators)
+func (v *validatingVisitor) isOperatorValidForField(operator, requestField, canonicalField string) (bool, error) {
+	allowedOperatorsForField, ok, err := findMatchInMap(canonicalField, v.AllowedOperators)
+	if err != nil {
+		return false, err
+	}
 
 	if !ok {
 		allowedFields := reflect.ValueOf(v.AllowedOperators).MapKeys()
@@ -262,14 +264,19 @@ func (v *validatingVisitor) isOperatorValidForField(operator, requestField strin
 }
 
 func (v *validatingVisitor) validateFieldAndValue(operator, requestField string, values ...string) error {
-
-	if _, err := v.isOperatorValidForField(operator, requestField); err != nil {
+	canonicalField, err := v.resolveFieldName(requestField)
+	if err != nil {
 		return err
 	}
 
-	canonicalField := v.resolveFieldName(requestField)
+	if _, err := v.isOperatorValidForField(operator, requestField, canonicalField); err != nil {
+		return err
+	}
 
-	fieldType, ok := findMatchInMap(canonicalField, v.FieldTypes)
+	fieldType, ok, err := findMatchInMap(canonicalField, v.FieldTypes)
+	if err != nil {
+		return err
+	}
 
 	if !ok {
 		// This is almost certainly a bug, we should always get a string back if something wasn't set.
@@ -284,7 +291,10 @@ func (v *validatingVisitor) validateFieldAndValue(operator, requestField string,
 		}
 	}
 
-	valueValidatorsForField, ok := findMatchInMap(canonicalField, v.ValueValidators)
+	valueValidatorsForField, ok, err := findMatchInMap(canonicalField, v.ValueValidators)
+	if err != nil {
+		return err
+	}
 
 	if ok {
 		for _, value := range values {
@@ -310,37 +320,82 @@ func (v *validatingVisitor) validateFieldAndValue(operator, requestField string,
 	return nil
 }
 
-func (v *validatingVisitor) resolveFieldName(requestField string) string {
-	canonicalField := requestField
-	if realName, ok := v.ColumnAliases[requestField]; ok {
-		canonicalField = realName
-	} else {
-		for k, v := range v.ColumnAliases {
-			if len(k) > 0 && k[0] == '^' && k[len(k)-1] == '$' {
-				r := regexp.MustCompile(k)
-				canonicalField = string(r.ReplaceAll([]byte(canonicalField), []byte(v)))
+func (v *validatingVisitor) resolveFieldName(requestField string) (string, error) {
+	var matchedKeys []string
+
+	// Check for exact match
+	if _, ok := v.ColumnAliases[requestField]; ok {
+		matchedKeys = append(matchedKeys, requestField)
+	}
+
+	// Check for regex matches (even if we found an exact match, to detect ambiguity)
+	for k := range v.ColumnAliases {
+		if len(k) > 0 && k[0] == '^' && k[len(k)-1] == '$' {
+			r := regexp.MustCompile(k)
+			if r.MatchString(requestField) {
+				matchedKeys = append(matchedKeys, k)
 			}
 		}
 	}
 
-	return canonicalField
-}
-
-func findMatchInMap[T any](key string, m map[string]T) (T, bool) {
-
-	if v, ok := m[key]; ok {
-		return v, true
+	if len(matchedKeys) > 1 {
+		sort.Strings(matchedKeys)
+		return "", fmt.Errorf("field [%s] matches multiple aliases in configuration: %v", requestField, matchedKeys)
 	}
 
+	// Apply the single matched alias (if any)
+	canonicalField := requestField
+	if len(matchedKeys) == 1 {
+		key := matchedKeys[0]
+		if len(key) > 0 && key[0] == '^' && key[len(key)-1] == '$' {
+			// Regex alias - apply replacement
+			r := regexp.MustCompile(key)
+			canonicalField = string(r.ReplaceAll([]byte(canonicalField), []byte(v.ColumnAliases[key])))
+		} else {
+			// Exact alias
+			canonicalField = v.ColumnAliases[key]
+		}
+	}
+
+	return canonicalField, nil
+}
+
+func findMatchInMap[T any](key string, m map[string]T) (T, bool, error) {
+	var matchedKeys []string
+	var matchedValue T
+	found := false
+
+	// Check for exact match
+	if v, ok := m[key]; ok {
+		matchedKeys = append(matchedKeys, key)
+		matchedValue = v
+		found = true
+	}
+
+	// Check for regex matches (even if we found an exact match, to detect ambiguity)
 	for k, v := range m {
 		if len(k) > 0 && k[0] == '^' && k[len(k)-1] == '$' {
 			r := regexp.MustCompile(k)
 			if r.MatchString(key) {
-				return v, true
+				matchedKeys = append(matchedKeys, k)
+				if !found {
+					matchedValue = v
+					found = true
+				}
 			}
 		}
 	}
-	var zero T
 
-	return zero, false
+	if len(matchedKeys) > 1 {
+		sort.Strings(matchedKeys)
+		var zero T
+		return zero, false, fmt.Errorf("field [%s] matches multiple keys in configuration: %v", key, matchedKeys)
+	}
+
+	if !found {
+		var zero T
+		return zero, false, nil
+	}
+
+	return matchedValue, true, nil
 }

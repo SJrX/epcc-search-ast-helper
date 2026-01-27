@@ -58,7 +58,7 @@ func Example(ast *epsearchast.AstNode) error {
 
 Aliases can also match Regular Expressions. Regular expresses are specified starting with the `^` and ending with `$`, as the key to the alias. The regular expression can include capture groups and use the same syntax as [Regexp.Expand()](https://pkg.go.dev/regexp#Regexp.Expand) to refer to the groups in the replacement (e.g., `$1`).
 
-**Note**: Regular expressions are an advanced use case, and care is needed as the validation involved is maybe more limited than expected. In general if more than one regular expression can a key, then it's not defined which one will be used. Some errors may only be caught at runtime.
+**Note**: Regular expressions are an advanced use case. If a field matches more than one key in the configuration (whether exact match, regex, or a combination), validation will return an error listing the conflicting keys. This prevents ambiguous configurations from causing unpredictable behavior.
 
 **Note**: Another catch concerns the fact that `.` is a wild card in regex and often a path separator in JSON, so if you aren't careful you can allow or create inconsistent rules. In general, you should escape `.` in separators to `\.` and use `([^.]+)` to match a wild card part of the attribute name (or maybe even `[a-zA-Z0-9_-]+`) 
 
@@ -146,7 +146,7 @@ Over time this value and argument might change as we get more experience, in the
 
 #### Regular Expressions
 
-Regular Expressions can also be set when using the Validation functions, the same rules apply as for aliases (see above). In general aliases are resolved prior to validation rules and operator checks.
+Regular Expressions can also be set when using the Validation functions, the same rules apply as for aliases (see above). In general aliases are resolved prior to validation rules and operator checks. If a field matches multiple keys (e.g., both an exact match `array` and a regex `^array.*$`), validation will return an error.
 
 ### Working with ASTs
 
