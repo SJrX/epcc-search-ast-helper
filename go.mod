@@ -6,7 +6,7 @@ require (
 	github.com/go-playground/validator/v10 v10.28.0
 	github.com/lib/pq v1.10.9
 	github.com/stretchr/testify v1.11.1
-	go.mongodb.org/mongo-driver/v2 v2.4.0
+	go.mongodb.org/mongo-driver/v2 v2.4.2
 	gorm.io/driver/postgres v1.6.0
 	gorm.io/gorm v1.31.1
 )
